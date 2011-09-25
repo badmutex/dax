@@ -10,14 +10,15 @@ import re
 import glob
 import shutil
 import itertools
+import functools
 
 _logger = ezlog.setup(__name__)
 
 
 
-_re_run   = re.compile(r'%(sep)sRUN([0-9]+)%(sep)s'    % {'sep':os.sep})
-_re_clone = re.compile(r'%(sep)sCLONE([0-9]+)%(sep)s'  % {'sep':os.sep})
-_re_gen   = re.compile(r'%(sep)sGEN([0-9]+)%(sep)s'    % {'sep':os.sep})
+_re_run   = re.compile(r'%(sep)sRUN([0-9]+)'    % {'sep':os.sep})
+_re_clone = re.compile(r'%(sep)sCLONE([0-9]+)'  % {'sep':os.sep})
+_re_gen   = re.compile(r'%(sep)sGEN([0-9]+)'    % {'sep':os.sep})
 
 
 
@@ -35,10 +36,10 @@ def read_cannonical_traj(path):
         raise ValueError, 'Could not parse the RUN from %s' % path
 
     m_clone = _re_clone.search(path)
-    if not m_run:
+    if not m_clone:
         raise ValueError, 'Could not parse the CLONE from %s' % path
 
-    rc = m_run.group(), m_clone.group()
+    rc = m_run.group(1), m_clone.group(1)
     return tuple(map(int, rc))
 
 
@@ -58,7 +59,7 @@ def read_cannonical(path):
     if not m_gen:
         raise ValueError, 'Could not parse the GEN from %s' % path
 
-    gen = int(m_gen.group())
+    gen = int(m_gen.group(1))
     return run, clone, gen
 
 
@@ -78,7 +79,7 @@ def cannonical(run, clone, gen):
     @return (string)
     """
 
-    return os.path.join(cannonical_traj(run, clone) 'GEN%04d' % gen)
+    return os.path.join(cannonical_traj(run, clone), 'GEN%04d' % gen)
 
 
 def cannonical_gen(gen):
@@ -126,25 +127,29 @@ class Generation(object):
         @param gendir (string)
         """
 
-        genfiles  = os.listdir(gendir)
+        genfiles  = map(functools.partial(os.path.join, gendir), os.listdir(gendir))
         bases     = itertools.imap(os.path.basename, genfiles)
         originals = itertools.imap(os.readlink, genfiles)
+
+        _logger.debug('Loading Generation (%d,%d,%d) files %s from %s' % (self.run,self.clone,self.gen,tuple(genfiles),gendir))
 
         for base, original in itertools.izip(bases, originals):
             self._names.add(base)
             self._original_files.add(original)
 
 
-    def write_dax(self, trajdir):
+    def write_dax(self, trajdir, force=False):
 
         location = cannonical_gen(self)
         gendir   = os.path.join(trajdir, location)
+
+        _logger.debug('Writing Generation (%d,%d,%d) files %s to %s' % (self.run,self.clone,self.gen,tuple(self._names),gendir))
 
         if not os.path.exists(gendir):
             _logger.debug('Creating %s' % gendir)
             os.makedirs(gendir)
 
-        self.symlink(gendir)
+        self.symlink(gendir, force=force)
 
 
     def add(self, path):
@@ -183,10 +188,10 @@ class Generation(object):
         @return (2-tuple (string, string)): the path to the actual file and it's name under *root*
         """
 
-        for f in self._files:
+        for original in self._original_files:
             location = cannonical_gen(self)
-            target   = os.path.join(root, location, os.path.basename(f))
-            yield sanitize(f), target
+            target   = os.path.join(root, os.path.basename(original))
+            yield sanitize(original), sanitize(target)
 
 
     def symlink(self, root, force=False):
@@ -203,10 +208,10 @@ class Generation(object):
 
             ## the target may exist and we either skip it or overwrite it
             if os.path.exists(target) and not force:
-                _logger.warning('%s already exists, skipping' % target)
+                _logger.warning('%s -> %s already exists, skipping' % (target, os.readlink(target)))
                 continue
             elif os.path.exists(target) and force:
-                _logger.warning('%s already exists, overwriting' % target)
+                _logger.warning('%s -> %s already exists, overwriting' % (target, os.readlink(target)))
                 os.remove(target)
             else: pass # this is ok
 
@@ -248,7 +253,7 @@ class Generation(object):
         
 
 
-    def get(self, root, pattern, unlink=False):
+    def get_file(self, root, pattern, unlink=False):
         """
         Get the path to a file matching *pattern*
 
@@ -292,6 +297,8 @@ class Trajectory(object):
         Load the trajectory 
         """
 
+        _logger.info('Loading Trajectory (%d,%d) from %s' % (self.run, self.clone, root))
+
         gendirs = glob.iglob(os.path.join(root, 'GEN*'))
 
         for dirpath in gendirs:
@@ -300,31 +307,20 @@ class Trajectory(object):
             gen.load_dax(dirpath)
 
 
-    def write_dax(self, root):
-        _logger.info('Writing trajectory (%d,%d)' % (self.run, self.clone))
 
-        location = cannonical_traj(self.run, self.clone)
-        trajdir  = os.path.join(root, location)
-
-        if not os.path.exists(trajdir):
-            _logger.debug('Creating %s' % trajdir)
-            os.makedirs(trajdir)
-
-        for gen in self.generations():
-            gen.write_dax(trajdir)
-
-
-    def write_dax(self, prefix):
+    def write_dax(self, prefix, force=False):
 
         location = cannonical_traj(self.run, self.clone)
         trajdir  = os.path.join(prefix, location)
 
+        _logger.info('Writing Trajectory (%d,%d) with %d gens to %s' % (self.run,self.clone,self.num_generations(),trajdir))
+
         if not os.path.exists(trajdir):
             _logger.debug('Creating %s' % trajdir)
             os.makedirs(trajdir)
 
         for gen in self.generations():
-            gen.write_dax(prefix)
+            gen.write_dax(prefix, force=force)
 
 
     def generation(self, gen, create=False):
@@ -342,8 +338,14 @@ class Trajectory(object):
         return self._generations[gen]
 
 
+    def num_generations(self):
+        """
+        @return (int): the number of generations in this Trajectory
+        """
+        return len(self._generations)
+
     def generations(self):
-        for k self._generations.keys():
+        for k in self._generations.keys():
             yield self._generations[k]
 
 
@@ -356,7 +358,7 @@ class Trajectory(object):
         """
 
         if gen not in self._generations:
-            self._generations[gen] = Generation(run, clone, gen)
+            self._generations[gen] = Generation(self.run, self.clone, gen)
 
         self._generations[gen].add(path)
 
@@ -412,23 +414,36 @@ class Project(object):
         @raise ValueError: if *path* is not a file
         """
 
-        if clone not in self._data[run]:
-            self._data[run][clone] = Trajectory(self.run, self.clone)
+        _logger.debug('Adding (%d,%d,%d) file %s' % (run, clone, gen, path))
 
-        traj = self.trajectory(run, clone)
+        # if run not in self._data:
+        #     _logger.debug('Initializing RUN %s' % run)
+        #     self._data[run] = dict()
+
+        # if clone not in self._data[run]:
+        #     _logger.debug('Initializing trajectory (%d, %d)' % (run, clone))
+        #     self._data[run][clone] = Trajectory(run, clone)
+
+        traj = self.trajectory(run, clone, create=True)
         traj.add(gen, path)
 
 
     def trajectory(self, run, clone, create=False):
 
+        _logger.debug('Grabbing Trajectory (%d,%d) with create=%s' % (run, clone, create))
+
         if run not in self._data and not create:
             raise ValueError, 'RUN %s not known' % run
+        elif run not in self._data and create:
+            self._data[run] = dict()
 
-        elif clone not in self._data[run] and not create:
+        if clone not in self._data[run] and not create:
             raise ValueError, 'CLONE %s not known' % clone
-
-        elif run not in self._data and clone not in self._data[run] and create:
+        elif clone not in self._data[run] and create:
             self._data[run][clone] = Trajectory(run, clone)
+
+        if run not in self._data and clone not in self._data[run] and not create:
+            raise RuntimeError, 'Trajectory (%d,%d) not known and create=%s' % (run,clone,create)
 
         return self._data[run][clone]
 
@@ -451,11 +466,16 @@ class Project(object):
         @param path (string): a file containing (one per line) the files that make up this project
         """
 
+        _logger.info('Loading data from %s using %s' % (path, fn))
+
         with open(path) as fd:
             for line in itertools.imap(str.strip, fd):
                 r,c,g = fn(line)
+                self.add(r,c,g, line)
                 
-    def load_dax(self, root):
+    def load_dax(self):
+
+        root = self.root()
 
         pattern = os.path.join(root, 'RUN*', 'CLONE*')
 
@@ -463,10 +483,10 @@ class Project(object):
 
         for dirpath in glob.iglob(pattern):
             r,c = read_cannonical_traj(dirpath)
-            traj = self.trajectory(r, c)
+            traj = self.trajectory(r, c, create=True)
             traj.load_dax(dirpath)
 
-    def write_dax(self):
+    def write_dax(self, force=False):
 
         if not os.path.exists(self._root):
             _logger.debug('Creating %s' % self._root)
@@ -474,4 +494,4 @@ class Project(object):
         _logger.info('Writing project to %s' % self._root)
 
         for traj in self.trajectories():
-            traj.write_dax(self._root)
+            traj.write_dax(self._root, force=force)
