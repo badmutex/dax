@@ -220,32 +220,36 @@ class Generation(object):
 
 
 
-    def lookup(self, root, basename, unlink=False):
+    def lookup(self, root, basename, readlink=False, ignoreErrors=False):
         """
         Get the path to the name of the file given by *basename*.
-        Default: get the file under *root* if unlink if False
+        Default: get the file under *root* if readlink if False
         Otherwise: follow the symlink to the original file
 
         @param root (string)
         @param basename (string)
-        @param unlink=False (boolean)
+        @param readlink=False (boolean)
         @return (string)
 
         @raise SymlinkMissing if the symlink does not exist
-        @raise OriginalMissing if the original does not exist and *unlink* is True
+        @raise OriginalMissing if the original does not exist and *readlink* is True
         """
 
         
+        _logger.debug('Generation.lookup: Gen (%d,%d) root=%s basename=%s readlink=%s' % (self.run, self.clone, root, basename, readlink))
+
         symlink = os.path.join(sanitize(root), cannonical_gen(self), basename)
 
-        if not os.path.exists(symlink):
+        _logger.debug('Generation.lookup: symlink=%s' % symlink)
+
+        if not ignoreErrors and not os.path.exists(symlink):
             raise SymlinkMissing, symlink
 
-        if not unlink:
+        if not readlink:
             return symlink
 
         original = os.readlink(symlink)
-        if not os.path.exists(original):
+        if not ignoreErrors and not os.path.exists(original):
             raise OriginalMissing, original
 
         return original
@@ -253,28 +257,32 @@ class Generation(object):
         
 
 
-    def get_file(self, root, pattern, unlink=False):
+    def get_file(self, root, pattern, readlink=False, ignoreErrors=False):
         """
         Get the path to a file matching *pattern*
 
         @param root (string)
         @param pattern (string): a python regular expression to match on the basename of one of this generation's files
-        @param unlink=False (boolean)
+        @param readlink=False (boolean)
         @return (string): the location of the file
 
         @raise ValueError: if the *pattern* fails to match or more than one files matched
         @raise SymlinkMissing: if the path does not exist under *root*
-        @raise OriginalMissing: if *unlink* is True and the original file does not exist
+        @raise OriginalMissing: if *readlink* is True and the original file does not exist
         """
 
-        bases    = map(os.path.basename, self._files)
-        regex    = re.compile(patter)
+        bases    = list(self._names)
+        regex    = re.compile(pattern)
         matches  = itertools.imap(regex.match, bases)
+        matches  = itertools.izip(matches, bases)
+        matches  = map(lambda (m, b): b if m else None, matches)
         notNones = filter(None, matches)
+
+        _logger.debug('Generation.get_file: bases=%s regex=%s matches=%s notNones=%s' % (bases, regex, matches, notNones))
 
         if len(notNones) == 1:
             base = notNones[0]
-            return self.lookup(root, base, unlink=unlink)
+            return self.lookup(root, base, readlink=readlink, ignoreErrors=ignoreErrors)
         elif len(notNones) < 1:
             raise ValueError, 'Pattern %s failed to match any of %s' % (pattern, bases)
         else:
@@ -451,6 +459,14 @@ class Project(object):
         for r in self._data.iterkeys():
             for c in self._data[r].iterkeys():
                 yield self._data[r][c]
+
+
+    def get_files(self, pattern, readlink=False, ignoreErrors=False):
+
+        for traj in self.trajectories():
+            for gen in traj.generations():
+                yield gen.get_file(self._root, pattern, ignoreErrors=ignoreErrors)
+
 
 
     def generation(self, run, clone, gen, create=False):
