@@ -9,6 +9,7 @@ import os
 import re
 import glob
 import shutil
+import fnmatch
 import itertools
 import functools
 
@@ -262,7 +263,7 @@ class Generation(object):
         Get the path to a file matching *pattern*
 
         @param root (string)
-        @param pattern (string): a python regular expression to match on the basename of one of this generation's files
+        @param pattern (string): a pattern similar to shell wildcards acceptable to the python fnmatch modules to match on the basename of one of this generation's files
         @param readlink=False (boolean)
         @return (string): the location of the file
 
@@ -271,23 +272,15 @@ class Generation(object):
         @raise OriginalMissing: if *readlink* is True and the original file does not exist
         """
 
-        bases    = list(self._names)
-        regex    = re.compile(pattern)
-        matches  = itertools.imap(regex.match, bases)
-        matches  = itertools.izip(matches, bases)
-        matches  = map(lambda (m, b): b if m else None, matches)
-        notNones = filter(None, matches)
+        bases   = list(self._names)
+        matches = fnmatch.filter(bases, pattern)
 
-        _logger.debug('Generation.get_file: bases=%s regex=%s matches=%s notNones=%s' % (bases, regex, matches, notNones))
-
-        if len(notNones) == 1:
-            base = notNones[0]
-            return self.lookup(root, base, readlink=readlink, ignoreErrors=ignoreErrors)
-        elif len(notNones) < 1:
+        if len(matches) == 1:
+            return self.lookup(root, matches[0], readlink=readlink, ignoreErrors=ignoreErrors)
+        elif len(matches) < 1:
             raise ValueError, 'Pattern %s failed to match any of %s' % (pattern, bases)
         else:
             raise ValueError, 'Pattern %s matched too many of %s' % (pattern, bases)
-
 
 
 
