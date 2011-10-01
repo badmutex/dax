@@ -107,6 +107,168 @@ class DuplicateException (Exception): pass
 
 
 
+class Location(object):
+
+    def resolve(self):
+        """
+        Returns a path to the local copy of file
+        """
+        raise NotImplementedError
+
+
+    def _parse_url(self):
+        raise NotImplementedError
+
+
+    def __enter__(self):
+        raise NotImplementedError
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        raise NotImplementedError
+
+
+    def _debug(self):
+        _logger.debug('Location: location = %s' % self)
+
+
+    @classmethod
+    def location(cls, url):
+
+        _logger.debug('Location.location: parsing url %s' % url)
+
+        if url.startswith('chirp'):
+            return Chirp(url)
+        elif url.startswith('file'):
+            return Local(url)
+        else:
+            raise ValueError, 'Cannot parse url %s' % url
+
+
+
+class Local(Location):
+    def __init__(self, url, **kws):
+        self.url = url
+        self.name = None
+
+        self._parse_url()
+
+        Location.__init__(self)
+
+    def _parse_url(self):
+
+        ### remove the 'file://'
+        ix = self.url.find('://') + 3
+        self.name = self.url[ix:]
+        self._debug()
+
+
+    def __str__(self):
+        return 'Local(url=%r,name=%r)' % (self.url, self.name)
+
+    def resolve(self):
+        return self.name
+
+    def __enter__(self):
+        return self.resolve()
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        pass
+
+
+class Chirp(Location):
+
+    def __init__(self, url):
+
+        self.url    = url
+        self.host   = 'localhost'
+        self.port   = None
+        self.remote = None
+        self.name   = None
+
+        self._parse_url()
+
+        Location.__init__(self)
+
+    def _get_local_name(self):
+        name = self.remote.replace(os.sep, '!')
+        return os.path.join('/tmp', name)
+
+    def _parse_url(self):
+
+        ### remove 'chirp://'
+        ix = self.url.find('://') + 3
+        url = self.url[ix:]
+
+        self._debug()
+
+        ### find the port if it is present
+        ix_port = url.find(':')
+        if ix_port >= 0:
+            ix_host_end   = ix_port
+
+            port          = url[ix_port+1:]
+            ix_slash      = port.find('/')
+            port          = port[:ix_slash]
+            port          = int(port)
+            self.port = port
+
+            self._debug()
+
+        ### setup for parsing out the host
+        else:
+            ix_host_end   = url.find('/')
+
+        ### find the hostname
+        host          = url[:ix_host_end]
+        self.host = host
+
+        self._debug()
+
+        ### find data location
+        ix_data = url.find('/')
+        data = url[ix_data:]
+        self.remote = data
+
+        self._debug()
+
+
+    def __str__(self):
+        return 'Chirp(%r,host=%r,port=%r,remote=%r,name=%r)' % (self.url, self.host, self.port, self.remote, self.name)
+
+    def resolve(self):
+
+        self.name = self._get_local_name()
+        if os.path.exists(self.name):
+            _logger.debug('Chirp: %s is cached' % self.name)
+            return self.name
+        else:
+
+            cmd = "chirp_get %(host)s%(port)s '%(remote)s' '%(local)s'" % {
+                'host'   : self.host,
+                'port'   : (':%d' % self.port) if self.port else '',
+                'remote' : self.remote,
+                'local'  : self.name      }
+
+            _logger.debug('Chirp: Getting remote:%s -> local:%s' % (self.remote, self.name))
+            _logger.debug('Chirp: Executing: %s' % cmd)
+
+            exitcode = os.system(cmd)
+            if not exitcode == 0:
+                raise IOError, 'Command %s failed with exit code %s' % (cmd, exitcode)
+
+            return self.name
+
+
+    def __enter__(self):
+        return self.resolve()
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        _logger.debug('Chirp: unlinking local file %s' % self.name)
+        os.unlink(self.name)
+
+
+
+
 class Generation(object):
 
     def __init__(self, run, clone, gen, files=[]):
@@ -504,3 +666,18 @@ class Project(object):
 
         for traj in self.trajectories():
             traj.write_dax(self._root, force=force)
+
+
+
+def _test():
+    url = 'http://foo.bar'
+    url = 'file:///pscratch/csweet1/lcls/data/lcls.fah.10009'
+    url = 'chirp://lclsstor01.crc.nd.edu:9094/lcls/fah/data/PROJ10009/RUN0/CLONE0/results-000.tar.bz2'
+    with Location.location(url) as name:
+        print 'Hello local file:', name
+
+
+
+if __name__ == '__main__':
+    ezlog.set_level(ezlog.DEBUG, __name__)
+    _test()
