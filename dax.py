@@ -412,62 +412,23 @@ class Generation(object):
 
 
 
-    def lookup(self, root, basename, readlink=False, ignoreErrors=False):
-        """
-        Get the path to the name of the file given by *basename*.
-        Default: get the file under *root* if readlink if False
-        Otherwise: follow the symlink to the original file
-
-        @param root (string)
-        @param basename (string)
-        @param readlink=False (boolean)
-        @return (string)
-
-        @raise SymlinkMissing if the symlink does not exist
-        @raise OriginalMissing if the original does not exist and *readlink* is True
-        """
-
-        
-        _logger.debug('Generation.lookup: Gen (%d,%d) root=%s basename=%s readlink=%s' % (self.run, self.clone, root, basename, readlink))
-
-        symlink = os.path.join(sanitize(root), cannonical_gen(self), basename)
-
-        _logger.debug('Generation.lookup: symlink=%s' % symlink)
-
-        if not ignoreErrors and not os.path.exists(symlink):
-            raise SymlinkMissing, symlink
-
-        if not readlink:
-            return symlink
-
-        original = os.readlink(symlink)
-        if not ignoreErrors and not os.path.exists(original):
-            raise OriginalMissing, original
-
-        return original
-
-        
-
-
-    def get_file(self, root, pattern, readlink=False, ignoreErrors=False):
+    def location(self, root, pattern):
         """
         Get the path to a file matching *pattern*
 
         @param root (string)
         @param pattern (string): a pattern similar to shell wildcards acceptable to the python fnmatch modules to match on the basename of one of this generation's files
-        @param readlink=False (boolean)
-        @return (string): the location of the file
+        @return (string or None): the Location if it matches otherwise None
 
-        @raise ValueError: if the *pattern* fails to match or more than one files matched
-        @raise SymlinkMissing: if the path does not exist under *root*
-        @raise OriginalMissing: if *readlink* is True and the original file does not exist
+        @raise ValueError: if the *pattern* matchs more than one files matched
         """
 
-        bases   = list(self._names)
+        bases   = self._names.keys()
         matches = fnmatch.filter(bases, pattern)
 
         if len(matches) == 1:
-            return self.lookup(root, matches[0], readlink=readlink, ignoreErrors=ignoreErrors)
+            name = matches[0]
+            return self._names[name]
         elif len(matches) < 1:
             raise ValueError, 'Pattern %s failed to match any of %s' % (pattern, bases)
         else:
@@ -637,11 +598,14 @@ class Project(object):
                 yield self._data[r][c]
 
 
-    def get_files(self, pattern, readlink=False, ignoreErrors=False):
+    def locations(self, pattern):
 
         for traj in self.trajectories():
             for gen in traj.generations():
-                yield gen.get_file(self._root, pattern, ignoreErrors=ignoreErrors)
+                loc = gen.location(self._root, pattern)
+                if loc: yield loc
+                else: _logger.warn('Project: pattern %s did not match any file for generation (%d,%d,%d)' % \
+                                       (pattern, gen.run, gen.clone, gen.gen))
 
 
 
@@ -709,8 +673,8 @@ def _test_read_filelist():
     print '\n\t'.join(map(str,chirp_locations))
 
 
-def _test():
-    filelist = 'tests/p10009.xtclist'
+def _test_load_write_project():
+    filelist = 'tests/p10009.xtclist.test2'
     local_locations = read_filelist(filelist, kind='local')
     chirp_locations = read_filelist(filelist, kind='chirp', host='localhost', port=9887)
 
@@ -730,8 +694,15 @@ def _test():
     proj.load_locations(read_path, chirp_locations)
     proj.write_dax()
 
+def _test():
+    proj = Project('tests', 'lcls', 'fah', 10009)
+    proj.load_dax()
+    locs = proj.locations('*.xtc')
+    for l in locs:
+        print l
+
 
 
 if __name__ == '__main__':
-    ezlog.set_level(ezlog.INFO, __name__)
+    ezlog.set_level(ezlog.DEBUG, __name__)
     _test()
