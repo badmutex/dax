@@ -598,15 +598,20 @@ class Project(object):
                 yield self._data[r][c]
 
 
-    def locations(self, pattern):
+    def locations(self, pattern, files=False):
 
         for traj in self.trajectories():
             for gen in traj.generations():
                 loc = gen.location(self._root, pattern)
-                if loc: yield loc
+
+                if loc and not files: yield loc
+                elif loc and files:
+                    prefix = self._root
+                    path   = cannonical(gen.run, gen.clone, gen.gen)
+                    name   = os.path.basename(loc.url)
+                    yield os.path.join(prefix, path, name)
                 else: _logger.warn('Project: pattern %s did not match any file for generation (%d,%d,%d)' % \
                                        (pattern, gen.run, gen.clone, gen.gen))
-
 
 
     def generation(self, run, clone, gen, create=False):
@@ -697,7 +702,7 @@ def _test_load_write_project():
 def _test():
     proj = Project('tests', 'lcls', 'fah', 10009)
     proj.load_dax()
-    locs = proj.locations('*.xtc')
+    locs = proj.locations('*.xtc', files=False)
     for l in locs:
         print l
 
