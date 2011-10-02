@@ -143,6 +143,85 @@ class Location(object):
         else:
             raise ValueError, 'Cannot parse url %s' % url
 
+    @classmethod
+    def load_url(cls, path):
+        """
+        Given a Location file read and return the url from it
+        @param path (string): path to a dax.Project file
+        @return (string): the url contained in *path*
+        """
+
+        with open(path) as fd:
+            return fd.read().strip()
+
+    @classmethod
+    def from_file(cls, path):
+        """
+        Given a Location file return the corresponding Location object
+        @param path (string)
+        @return (Location)
+        """
+        url = Location.load_url(path)
+        loc = Location.location(url)
+        return loc
+
+
+    def to_file(self, path, force=False):
+        """
+        Writes the url of this Location to file designated by *path*
+        @param path (string)
+        @param force=False (boolean): overwrite *path* if it already exists
+        """
+
+        def write():
+            with open(path, 'w') as fd:
+                fd.write(self.url)
+
+        if os.path.exists(path) and force:
+            _logger.warning('Location %s already exists, overwritting' % path)
+            write()
+        elif os.path.exists(path) and not force:
+            _logger.warning('Location %s already exists, skipping' % path)
+        else: # not os.path.exist(path):
+            _logger.debug('Location %s being written' % path)
+            write()
+
+
+def read_filelist(path, kind='local', **kws):
+    """
+    Reads a list of files for a project and returns a generator over Locations
+
+    @param path (string): the path containing the project files (one per line)
+    @param kind=local (string enum: local|chirp)
+    @params **kws: if *kind* is 'chirp', then 'host' (string) is required and 'port' (int) is optional
+    @return (generator over Locations)
+    @raise ValueError if the proper Location type cannot be determined from the parameters
+    """
+
+    ### define the line handlers
+    def local_handler(line):
+        url = 'file://%s' % line
+        return Local(url)
+
+    def chirp_handler(line, host=None, port=None):
+        url = 'chirp://%(host)s%(port)s%(path)s' % {
+            'host' : host, 'port' : (':%d' % port) if port else '', 'path' : line}
+        return Chirp(url)
+
+    ### pick the correct handler
+    if kind == 'local':
+        handler = local_handler
+    elif kind == 'chirp' and 'host' in kws:
+        handler = chirp_handler
+    else:
+        raise ValueError, 'Cannot determin proper Location: kind=%s and **kws=%s' % (kind, kws)
+
+
+    ### handle the filelist
+    with open(path) as fd:
+        for line in itertools.imap(str.strip, fd):
+            yield handler(line, **kws)
+
 
 
 class Local(Location):
@@ -271,14 +350,17 @@ class Chirp(Location):
 
 class Generation(object):
 
-    def __init__(self, run, clone, gen, files=[]):
+    def __init__(self, run, clone, gen, locations=[]):
 
         self.run             = run
         self.clone           = clone
         self.gen             = gen
 
-        self._original_files = set(itertools.imap(os.path.abspath,  files))
-        self._names          = set(itertools.imap(os.path.basename, files))
+        ## dict of file name -> Location
+        self._names          = dict()
+        for loc in locations:
+            name = os.path.basename(loc.url)
+            self._names[name] = loc
 
 
     def load_dax(self, gendir):
@@ -290,15 +372,11 @@ class Generation(object):
         @param gendir (string)
         """
 
-        genfiles  = map(functools.partial(os.path.join, gendir), os.listdir(gendir))
-        bases     = itertools.imap(os.path.basename, genfiles)
-        originals = itertools.imap(os.readlink, genfiles)
-
-        _logger.debug('Loading Generation (%d,%d,%d) files %s from %s' % (self.run,self.clone,self.gen,tuple(genfiles),gendir))
-
-        for base, original in itertools.izip(bases, originals):
-            self._names.add(base)
-            self._original_files.add(original)
+        genfiles = os.listdir(gendir)
+        for name in genfiles:
+            path = os.path.join(gendir, name)
+            loc = Location.from_file(path)
+            self._names[name] = loc
 
 
     def write_dax(self, trajdir, force=False):
@@ -312,74 +390,25 @@ class Generation(object):
             _logger.debug('Creating %s' % gendir)
             os.makedirs(gendir)
 
-        self.symlink(gendir, force=force)
+        for name, location in self._names.iteritems():
+            path = os.path.join(gendir, name)
+            location.to_file(path, force=force)
 
 
-    def add(self, path):
+    def add(self, location):
         """
-        Add the file given by *path* to this generation
+        Add the Location given by *location* to this generation
 
-        @param path (string): the location of a file
+        @param location (Location): the location of a file
 
-        @raise ValueError: if *path* is not a file
-        @raise OriginalMissing: if *path* does not exist
-        """
-
-        abspath = os.path.abspath(path)
-
-        if not os.path.exists(abspath):
-            raise OriginalMissing, abspath
-
-        if not os.path.isfile(abspath):
-            raise ValueError, '%s is not a file' % abspath
-
-
-        base = os.path.basename(abspath)
-
-        if base in self._names:
-            _logger.warning('Already tracking %s' % abspath)
-        else:
-            self._original_files.add(abspath)
-            self._names.add(base)
-
-
-    def targets(self, root):
-        """
-        Get the source and target for the files of this generation
-
-        @param root (string): the root directory path
-        @return (2-tuple (string, string)): the path to the actual file and it's name under *root*
+        @raise DuplicateException: if the location is already tracked
         """
 
-        for original in self._original_files:
-            location = cannonical_gen(self)
-            target   = os.path.join(root, os.path.basename(original))
-            yield sanitize(original), sanitize(target)
+        name = os.path.basename(location.url)
+        if name in self._names:
+            raise DuplicateException, location
 
-
-    def symlink(self, root, force=False):
-        """
-        Symlink the files of the generation under *root*.
-        If a target already exists skip it (default) or overwrite it (when *force* is True)
-
-        @param root (string)
-        @prarm force=False (Boolean)
-        """
-
-        for src, target in self.targets(root):
-            loc = os.path.dirname(target)
-
-            ## the target may exist and we either skip it or overwrite it
-            if os.path.exists(target) and not force:
-                _logger.warning('%s -> %s already exists, skipping' % (target, os.readlink(target)))
-                continue
-            elif os.path.exists(target) and force:
-                _logger.warning('%s -> %s already exists, overwriting' % (target, os.readlink(target)))
-                os.remove(target)
-            else: pass # this is ok
-
-            _logger.debug('Linking %s -> %s' % (src, target))
-            os.symlink(src, target)
+        self._names[name] = location
 
 
 
@@ -512,18 +541,18 @@ class Trajectory(object):
             yield self._generations[k]
 
 
-    def add(self, gen, path):
+    def add(self, gen, location):
         """
-        Add *path* to this trajectory's generation
+        Add *location* to this trajectory's generation
 
         @param gen (int)
-        @param path (string)
+        @param location (Location)
         """
 
         if gen not in self._generations:
             self._generations[gen] = Generation(self.run, self.clone, gen)
 
-        self._generations[gen].add(path)
+        self._generations[gen].add(location)
 
 
 class Project(object):
@@ -565,30 +594,22 @@ class Project(object):
     def root(self)     : return self._root
 
 
-    def add(self, run, clone, gen, path):
+    def add(self, run, clone, gen, location):
         """
-        Add the file *path* to the project
+        Add the *location* to the project
 
         @param run (int)
         @param clone (int)
         @param gen (int)
-        @param path (string)
+        @param path (Location)
 
         @raise ValueError: if *path* is not a file
         """
 
-        _logger.debug('Adding (%d,%d,%d) file %s' % (run, clone, gen, path))
-
-        # if run not in self._data:
-        #     _logger.debug('Initializing RUN %s' % run)
-        #     self._data[run] = dict()
-
-        # if clone not in self._data[run]:
-        #     _logger.debug('Initializing trajectory (%d, %d)' % (run, clone))
-        #     self._data[run][clone] = Trajectory(run, clone)
+        _logger.debug('Adding (%d,%d,%d) %s' % (run, clone, gen, location))
 
         traj = self.trajectory(run, clone, create=True)
-        traj.add(gen, path)
+        traj.add(gen, location)
 
 
     def trajectory(self, run, clone, create=False):
@@ -627,22 +648,22 @@ class Project(object):
     def generation(self, run, clone, gen, create=False):
         return self.trajectory(run, clone, create=create).generation(gen, create=create)
 
-    def load_file(self, fn, path):
+    def load_locations(self, fn, locations):
         """
         Load a project from the files listed in *path* using *fn* to figure out the RUN, CLONE, and GEN are.
 
         @param fn (string -> (int,int,int)): a 1-ary function from a string to a 3-tuple of ints.
-                                             *fn* accespts an entry from *path* and
+                                             *fn* accespts an entry url from *locations* and
                                              returns the (run, clone, gen) for that entry
-        @param path (string): a file containing (one per line) the files that make up this project
+        @param locations (iterable over Locations)
         """
 
-        _logger.info('Loading data from %s using %s' % (path, fn))
+        _logger.info('Loading data from %s using %s' % (locations, fn))
 
-        with open(path) as fd:
-            for line in itertools.imap(str.strip, fd):
-                r,c,g = fn(line)
-                self.add(r,c,g, line)
+        for loc in locations:
+            r,c,g = fn(loc.url)
+            self.add(r,c,g, loc)
+
                 
     def load_dax(self):
 
@@ -669,15 +690,48 @@ class Project(object):
 
 
 
-def _test():
+def _test_location_context():
     url = 'http://foo.bar'
     url = 'file:///pscratch/csweet1/lcls/data/lcls.fah.10009'
     url = 'chirp://lclsstor01.crc.nd.edu:9094/lcls/fah/data/PROJ10009/RUN0/CLONE0/results-000.tar.bz2'
     with Location.location(url) as name:
         print 'Hello local file:', name
 
+def _test_read_filelist():
+    filelist = 'tests/p10009.xtclist.test2'
+    local_locations = read_filelist(filelist, kind='local')
+    chirp_locations = read_filelist(filelist, kind='chirp', host='localhost', port=9887)
+
+    print 'Local locations:\n\t',
+    print '\n\t'.join(map(str,local_locations))
+
+    print 'Chirp locations:\n\t',
+    print '\n\t'.join(map(str,chirp_locations))
+
+
+def _test():
+    filelist = 'tests/p10009.xtclist'
+    local_locations = read_filelist(filelist, kind='local')
+    chirp_locations = read_filelist(filelist, kind='chirp', host='localhost', port=9887)
+
+    def read_path(path):
+        re_gen = re.compile(r'%(sep)sresults-([0-9]+)' % {'sep':os.sep})
+        r,c = read_cannonical_traj(path)
+        m = re_gen.search(path)
+
+        if not m:
+            raise ValueError, 'Cannot parse generation from %s' % path
+
+        g = int(m.group(1))
+
+        return r,c,g
+
+    proj = Project('tests', 'lcls', 'fah', 10009)
+    proj.load_locations(read_path, chirp_locations)
+    proj.write_dax()
+
 
 
 if __name__ == '__main__':
-    ezlog.set_level(ezlog.DEBUG, __name__)
+    ezlog.set_level(ezlog.INFO, __name__)
     _test()
