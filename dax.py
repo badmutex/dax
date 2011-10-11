@@ -602,7 +602,12 @@ class Project(object):
 
         for traj in self.trajectories():
             for gen in traj.generations():
-                loc = gen.location(self._root, pattern)
+
+                try:
+                    loc = gen.location(self._root, pattern)
+                except ValueError, e:
+                    _logger.error('Could not get location for (%d,%d,%d): %s' % (gen.run, gen.clone, gen.gen, e))
+                    continue
 
                 if loc and not files: yield loc
                 elif loc and files:
