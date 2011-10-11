@@ -450,7 +450,7 @@ class Trajectory(object):
         Load the trajectory 
         """
 
-        _logger.info('Loading Trajectory (%d,%d) from %s' % (self.run, self.clone, root))
+        _logger.debug('Loading Trajectory (%d,%d) from %s' % (self.run, self.clone, root))
 
         gendirs = glob.iglob(os.path.join(root, 'GEN*'))
 
@@ -466,7 +466,7 @@ class Trajectory(object):
         location = cannonical_traj(self.run, self.clone)
         trajdir  = os.path.join(prefix, location)
 
-        _logger.info('Writing Trajectory (%d,%d) with %d gens to %s' % (self.run,self.clone,self.num_generations(),trajdir))
+        _logger.debug('Writing Trajectory (%d,%d) with %d gens to %s' % (self.run,self.clone,self.num_generations(),trajdir))
 
         if not os.path.exists(trajdir):
             _logger.debug('Creating %s' % trajdir)
@@ -600,6 +600,8 @@ class Project(object):
 
     def locations(self, pattern, files=False):
 
+        _logger.info('Searching for files matching pattern: %s' % pattern)
+
         for traj in self.trajectories():
             for gen in traj.generations():
 
@@ -647,8 +649,12 @@ class Project(object):
 
         _logger.info('Loading files from: %s' % pattern)
 
+        previous_run = -1
         for dirpath in glob.iglob(pattern):
             r,c = read_cannonical_traj(dirpath)
+            if r > previous_run:
+                previous_run = r
+                _logger.info('Loading RUN %d' % r)
             traj = self.trajectory(r, c, create=True)
             traj.load_dax(dirpath)
 
